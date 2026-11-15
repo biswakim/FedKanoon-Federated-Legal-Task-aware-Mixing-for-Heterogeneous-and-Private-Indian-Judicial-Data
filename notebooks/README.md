@@ -20,3 +20,11 @@ The experiments were run on Kaggle (GPU T4 x2, 12-hour sessions).
 skipped and interrupted federated runs resume from their last round (`ckpt.pt`). To continue,
 attach this notebook's output as input and run it again; the first cells merge all attached
 `runs/` folders into one `all_results.csv`.
+
+## Revision experiments (`kaggle_revision.ipynb`)
+
+Answers the review: heterogeneity statistics on the text sample, FedLegal-style baselines, the
+512-token control, and the "how FL helps" experiments (low-resource courts, unseen court). Attach
+`judgments_labelled.csv` and the revised repo, set `PART` in cell 4 (`flhelps`, `baselines`,
+`controls`), GPU T4 x2, Internet On, Save & Run All. Tables are in `results/revision/`. To continue
+after the 12 h limit, attach the notebook's own output and run it again.
