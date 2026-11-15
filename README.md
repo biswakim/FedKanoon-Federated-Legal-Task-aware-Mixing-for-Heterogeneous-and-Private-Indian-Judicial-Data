@@ -1,4 +1,4 @@
-# Federated Learning for Heterogeneous and Private Indian Judicial Data
+# FedKanoon: Federated Learning for Heterogeneous and Private Indian Judicial Data
 
 Federated Learning Course project, IISER Bhopal (2026): Bijinepalli Surat Dhani, Poorvai Chandrasen, Palak Kumari,
 Biswadeep Chakraborty.
