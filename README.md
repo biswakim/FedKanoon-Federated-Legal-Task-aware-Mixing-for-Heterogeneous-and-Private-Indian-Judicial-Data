@@ -1,9 +1,9 @@
 # Federated Learning for Heterogeneous and Private Indian Judicial Data
 
-Course project, IISER Bhopal (2026): Bijinepalli Surat Dhani, Poorvai Chandrasen, Palak Kumari,
+Federated Learning Course project, IISER Bhopal (2026): Bijinepalli Surat Dhani, Poorvai Chandrasen, Palak Kumari,
 Biswadeep Chakraborty.
 
-**Full report:** [`report/main.pdf`](report/main.pdf) (LaTeX source: [`report/main.tex`](report/main.tex)).
+**Full report:** [`report/main.pdf`](report/main.pdf)
 
 ## What this project does
 
@@ -24,11 +24,16 @@ using 12,360 public judgments decided in 2024.
 
 ## Objectives
 
-1. **Show whether the courts really differ** (are "non-IID"), with statistical tests, and find out how.
-2. **Test whether federated learning helps a court** compared with training alone, with standard FL
-   algorithms (as benchmarked in FedLegal), and with centralized training on pooled data.
-3. **Find out when federation helps most:** for courts with little data, and for a new court with no
-   labelled data.
+**RQ1**: Are the courts measurably non-IID, and in which of the three
+tasks?
+
+**RQ2**: Does federated training beat what a court can do alone, how
+does it compare with existing federated algorithms, and how
+close does it get to centralized training on pooled data?
+
+**RQ3**: What does federation give a court that it cannot get alone,
+when its own data are scarce or when it has no labelled data
+at all?
 
 ## Main results
 
@@ -59,7 +64,7 @@ three tasks. All rows use the same model and 3 seeds.
 federation. A court with no labelled data at all gets a better model from the federation than
 from any single other court in 4 of 5 cases.
 
-**Honest notes.** Our PTM method is tied with other personalised methods (Ditto, FedPer) in
+**Note:** Our PTM method is tied with other personalised methods (Ditto, FedPer) in
 accuracy; its added value is that it shows, per court and task, how much each court relies on
 sharing. TSR's accuracy gain mostly comes from reading more text: a plain model reading 512
 tokens does as well. See the report for details.
@@ -185,7 +190,6 @@ results/
   main_results.csv          results of the earlier report version
 report/
   main.pdf, main.tex        final report
-  REVIEW_RESPONSE.md        answers to the review, point by point
 data/                       put judgments_labelled.csv here
 ```
 
@@ -202,8 +206,6 @@ converts the data. Run it with `notebooks/kaggle_fedlegal_baseline.ipynb`.
 - The data are public judgments of cases decided in 2024. The privacy motivation is about
   confidential material (for example before a case is filed), which we could not test.
 - Case-type and disposal labels are rule-based.
-- The low-resource and unseen-court experiments use one seed.
-- No formal privacy guarantee: secure aggregation and differential privacy are not applied.
 - GPU runs are not exactly reproducible; repeated runs differ by up to about 0.02 in duration error.
 
 ## Acknowledgements and license
