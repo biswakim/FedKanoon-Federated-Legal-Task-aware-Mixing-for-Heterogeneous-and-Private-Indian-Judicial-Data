@@ -1,151 +1,212 @@
-# Federated Learning on Indian High Court Judgments
+# Federated Learning for Heterogeneous and Private Indian Judicial Data
 
-Predicting **case duration** and **disposal nature** from judgment text across five Indian High
-Courts with federated learning, so that no court has to share its judgments.
+Course project, IISER Bhopal (2026): Bijinepalli Surat Dhani, Poorvai Chandrasen, Palak Kumari,
+Biswadeep Chakraborty.
 
-Course project, IISER Bhopal (2026). Biswadeep Chakraborty, Bijinepalli Surat Dhani,
-Poorvai Chandrasen, Palak Kumari.
+**Full report:** [`report/main.pdf`](report/main.pdf) (LaTeX source: [`report/main.tex`](report/main.tex)).
 
-## Main result
+## What this project does
 
-Reading the start and the end of each judgment separately, with each task learning which part to
-use (**TSR**), is the largest improvement. Combined with per-court personalisation it beats
-standard federated learning, local training and centralized training on duration.
+Given the text of a court judgment, the model predicts three things:
 
-| Method (InLegalBERT, 3 seeds) | Duration MAE_log ↓ | Spearman ↑ | Disposal F1 ↑ | Case-type F1 ↑ | Worst-court MAE_log ↓ |
+| Task | Question | Output |
+| --- | --- | --- |
+| 1. Case duration | How long did the case take, from registration to decision? | number of days (predicted as log(1 + days)) |
+| 2. Case type | What kind of case is it? | one of 10 families: writ, bail, criminal, civil, contempt, arbitration, review, tax, motor accident, other |
+| 3. Disposal nature | How was it decided? | allowed, dismissed, disposed of, or withdrawn |
+
+The model is trained with **federated learning (FL)**. Each High Court keeps its own judgments and
+trains the model locally; only small model updates (about 1% of the model) are sent to a server,
+which combines them. No judgment ever leaves its court.
+
+We simulate a federation of five High Courts (Bombay, Delhi, Karnataka, Kerala, Madhya Pradesh)
+using 12,360 public judgments decided in 2024.
+
+## Objectives
+
+1. **Show whether the courts really differ** (are "non-IID"), with statistical tests, and find out how.
+2. **Test whether federated learning helps a court** compared with training alone, with standard FL
+   algorithms (as benchmarked in FedLegal), and with centralized training on pooled data.
+3. **Find out when federation helps most:** for courts with little data, and for a new court with no
+   labelled data.
+
+## Main results
+
+**1. The courts are clearly different.** The same type of case takes a different time and ends
+differently in each court, and each court writes judgments in its own style: a simple classifier
+can tell which court wrote a judgment with 99.97% accuracy, even with names, places and numbers masked.
+
+**2. Standard federated learning does not help, but personalised federated learning does.**
+"Gain over local" below is the average improvement over each court training alone, across the
+three tasks. All rows use the same model and 3 seeds.
+
+| Method | Duration error ↓ | Case-type F1 ↑ | Disposal F1 ↑ | Gain over local | Hardest court |
 | --- | --- | --- | --- | --- | --- |
-| Local only | 1.462 ± 0.025 | 0.579 | 0.551 | 0.894 | 1.825 |
-| Centralized (pooled data) | 1.462 ± 0.021 | 0.589 | **0.561** | 0.853 | 1.852 |
-| FedAvg | 1.474 ± 0.023 | 0.595 | 0.542 | 0.774 | 1.888 |
-| FedAvg + fine-tuning | 1.462 ± 0.035 | 0.595 | 0.554 | 0.900 | 1.789 |
-| **TSR** | **1.347** ± 0.013 | 0.632 | 0.539 | 0.844 | **1.704** |
-| **TSR + PTM + fine-tuning** | **1.347** ± 0.019 | **0.635** | 0.557 | **0.916** | 1.709 |
+| Each court trains alone (local) | 1.371 | 0.873 | 0.533 | 0.0% | 0.0% |
+| FedProx (standard FL) | 1.383 | 0.775 | 0.532 | −4.1% | −9.3% |
+| FedAdam (standard FL) | 1.369 | 0.792 | 0.526 | −3.4% | −6.9% |
+| Ditto (personalised FL) | 1.329 | 0.872 | 0.555 | +2.4% | −0.3% |
+| **Ours: TSR + PTM + fine-tuning** | 1.359 | **0.917** | 0.559 | **+3.6%** | **+0.6%** |
+| Centralized (all data pooled, not private) | 1.358 | 0.860 | 0.559 | +1.5% | −3.9% |
+| Centralized + per-court fine-tuning | 1.333 | 0.906 | 0.568 | +4.4% | +1.3% |
 
-MAE_log is the mean absolute error of log(1 + days). Full results, including FedProx, FedAvgM,
-FedAdam, loss-based weighting, task-decoupled heads and continual onboarding, are in
-[`results/main_results.csv`](results/main_results.csv) and [`report/methods_results.tex`](report/methods_results.tex).
+- Our method beats training alone (p = 0.015) and beats FedProx and FedAdam (p < 0.001).
+- It is statistically tied with the best centralized model (p = 0.30), so federation gets the
+  benefit of pooling data **without pooling it**.
+- Case type gains most, because each court labels and writes case types in its own way.
 
-**What the model learned.** Case type reads mainly the start of a judgment, disposal nature mainly
-the end, and duration both ([figure](results/figures/fig_segment_weights.png)). The learned mixing
-weights show that courts rely most on the shared head for duration and least for case type, whose
-codes are court-specific ([figure](results/figures/fig_mixing_weights.png)).
+**3. Federation helps small and new courts.** With only 25% of its data, a court gains 7.3% from
+federation. A court with no labelled data at all gets a better model from the federation than
+from any single other court in 4 of 5 cases.
 
-## Method
+**Honest notes.** Our PTM method is tied with other personalised methods (Ditto, FedPer) in
+accuracy; its added value is that it shows, per court and task, how much each court relies on
+sharing. TSR's accuracy gain mostly comes from reading more text: a plain model reading 512
+tokens does as well. See the report for details.
 
-* **Clients.** Bombay, Delhi, Karnataka, Kerala and Madhya Pradesh High Courts, one client each.
-* **Model.** InLegalBERT (or RoBERTa) with LoRA adapters; heads for duration (Huber loss on
-  log days), case type, and disposal nature conditioned on the predicted case type. Only adapters
-  and heads (about 1% of the model) are sent to the server.
-* **Leakage control.** Dates, years, multi-digit numbers and outcome words are masked.
-* **TSR** (`--segments 2`): the first and last 256 tokens are encoded separately; each task has a
-  learned query that weights the two.
-* **PTM** (`--mix_heads dur,typ,disp`): each court keeps the shared head and its own head for each
-  task and learns a blend weight per task; local heads and weights never leave the court.
-* **Baselines.** Local, centralized, FedAvg, FedProx, FedAvgM, FedAdam, loss-based client weighting,
-  FedAvg + per-court fine-tuning, fixed local heads (`--local_heads`), sequential EWC, and federated
-  continual onboarding with EWC and replay (`--regime fed_continual`).
+## How the model works
 
-## Repository layout
+- **Encoder:** InLegalBERT (a BERT model trained on Indian legal text) with small LoRA adapters.
+  Only the adapters and the prediction heads are trained and shared.
+- **Three prediction heads**, one per task. Disposal nature also gets the predicted case type as input.
+- **TSR (task-specific reading):** the first 256 and last 256 tokens of a judgment are read
+  separately, and each task learns which part to rely on. Case type reads the start, disposal the
+  end, duration both.
+- **PTM (per-task mixing):** each court keeps a shared head and its own head for every task and
+  learns how much to trust each. The court's own head never leaves the court.
+- **Leakage control:** dates, years, numbers and outcome words are masked, and the final order is
+  removed, so the model cannot read the answer from the text.
 
-```
-fl_judicial.py          data loading, masking, model, all training regimes (main script)
-run_queue.py            experiment plans (sweep, mini, confirm, novel, mix) with time budget and resume
-summarize_results.py    mean ± std over seeds from runs/all_results.csv
-notebooks/              Kaggle notebooks used for the experiments (see notebooks/README.md)
-scripts/
-  check_masking.py      re-applies the masking and reports what survives
-  plot_forgetting.py    forgetting curves for continual-onboarding runs
-  ner_features.py       optional OpenNyAI NER features (--ner_csv)
-  linear_baseline.py    fast CPU baseline (hashed n-grams, linear model)
-  heterogeneity_stats.py  statistical tests for quantity/label/concept/covariate skew across courts
-  significance.py       Delta_MTL headline metric, paired Wilcoxon and case-level bootstrap tests
-  revision_tables.py    tables for the revision runs (baselines, low-resource, unseen court, 512 control)
-FedLegal_India_Three_Task_Baseline/   FedLegal-style independent-task FL baseline
-tests/smoke_test.py     CPU end-to-end test with a tiny random encoder
-results/                main_results.csv and figures
-report/                 final report (main.tex, main.pdf) and figures
-data/                   put judgments_labelled.csv here (see data/README.md)
-```
+## Using the repository
 
-## Setup
+### 1. Install
 
 ```bash
-git clone <this repo> && cd judicial-fl
+git clone https://github.com/biswakim/Federated-Learning-for-Heterogeneous-and-Private-Indian-Judicial-Data.git
+cd Federated-Learning-for-Heterogeneous-and-Private-Indian-Judicial-Data
 pip install -r requirements.txt
-# put the data at data/judgments_labelled.csv (see data/README.md)
+```
+
+### 2. Add the data
+
+The data are not in the repository. Put the labelled judgments file at
+`data/judgments_labelled.csv` (columns are described in [`data/Readme.md`](data/Readme.md)).
+It is built from the Indian High Court Judgments dataset (Dattam Labs, AWS Open Data, CC-BY-4.0).
+
+### 3. Check that everything works (CPU, about a minute, no model download)
+
+```bash
 python tests/smoke_test.py --data data/judgments_labelled.csv --regime fl --algo fedavg
 ```
 
-The smoke test runs on CPU in about a minute and does not download a model.
+### 4. Run experiments
 
-## Running experiments
+A GPU is needed for real runs; we used Kaggle (2 × T4). The easiest way is the Kaggle notebooks in
+[`notebooks/`](notebooks/README.md):
 
-A GPU is needed for the real encoders (we used Kaggle T4s). Every run writes
-`runs/<run_name>/per_court_test.csv`, `config.json`, `history.csv` and appends to
-`runs/all_results.csv`; finished runs are skipped and interrupted federated runs resume.
+| Notebook | What it runs |
+| --- | --- |
+| `kaggle_revision.ipynb` | the final experiments: baselines, centralized comparison, 512-token control, low-resource and unseen-court studies |
+| `kaggle_fedlegal_baseline.ipynb` | the FedLegal-style baseline (one separate model per task) |
+| `kaggle_experiments.ipynb` | earlier experiments: setting selection, TSR and PTM |
+| `kaggle_continual.ipynb` | courts joining the federation one at a time |
+
+To run single experiments from the command line:
 
 ```bash
 DATA=data/judgments_labelled.csv
 COMMON="--data $DATA --model law-ai/InLegalBERT --lr 5e-4 --max_len 256 --rounds 30 --patience 4"
 
-# baselines
-python fl_judicial.py $COMMON --regime local --epochs 15 --patience 3 --trunc headtail
-python fl_judicial.py $COMMON --regime central --epochs 15 --patience 3 --trunc headtail
-python fl_judicial.py $COMMON --regime fl --algo fedavg --trunc headtail --finetune_epochs 1
-
-# proposed: TSR + PTM (+ fine-tuning, reported as a second method in the same run)
+# our method: TSR + PTM + per-court fine-tuning
 python fl_judicial.py $COMMON --regime fl --algo fedavg --segments 2 --mix_heads dur,typ,disp --finetune_epochs 1
 
-# federated continual onboarding with EWC + replay
-python fl_judicial.py $COMMON --regime fed_continual --trunc headtail --seq_epochs 3 \
-    --ewc_lambda 100 --replay_size 16 --local_heads dur,typ,disp
+# each court alone, and all data pooled
+python fl_judicial.py $COMMON --regime local   --epochs 15 --patience 3 --segments 2
+python fl_judicial.py $COMMON --regime central --epochs 15 --patience 3 --segments 2
 
-python summarize_results.py runs/all_results.csv     # writes comparison.csv
+# other federated algorithms
+python fl_judicial.py $COMMON --regime fl --segments 2 --algo fedprox --mu 0.01
+python fl_judicial.py $COMMON --regime fl --segments 2 --algo ditto --ditto_lambda 1.0
 ```
 
-Review experiments (FedLegal-style baselines, 512-token control, low-resource and unseen-court
-studies): `python run_queue.py --data $DATA --plan revision --part {baselines,controls,flhelps}`.
-New flags: `--save_preds`, `--court_frac court:frac,...`, `--holdout_court COURT`, `--cross_eval`.
-See `report/REVIEW_RESPONSE.md`.
+Or run a whole set of experiments, with time budget and automatic resume:
 
-Other algorithms: `--algo scaffold`, `--algo ditto --ditto_lambda 0.1`, `--algo fedprox --mu 0.01`, `--algo fedavgm --server_lr 1.0`,
-`--algo fedadam --server_lr 3e-3`, `--algo lossweight --beta -1`. Full queues used in the
-project: `python run_queue.py --data $DATA --plan {sweep,mini,confirm,novel,mix}`; see the
-docstring of `run_queue.py`.
+```bash
+python run_queue.py --data $DATA --plan revision --part baselines   # FL algorithms and centralized
+python run_queue.py --data $DATA --plan revision --part controls    # 512-token control, extra seeds
+python run_queue.py --data $DATA --plan revision --part flhelps     # low-resource and unseen-court
+```
 
-## FedLegal-style independent-task baseline
+Each run saves its results to `runs/<run_name>/` and adds them to `runs/all_results.csv`.
+Finished runs are skipped, and interrupted federated runs resume from the last round.
 
-`FedLegal_India_Three_Task_Baseline/` trains one separate federated model per task (FedAvg, InLegalBERT + LoRA,
-256 head+tail tokens, no personalisation). It is inspired by FedLegal (ACL 2023), not its original code (see its
-README). To compare it with the main model it uses the same split and masking: `scripts/make_adapter_csv.py`
-converts `judgments_labelled.csv`, mapping the case-type families to the baseline's label names so no cases are
-dropped. Case-type macro-F1 is computed over the families present, as in `fl_judicial.py`, and the duration
-output starts at log(90 days). On Kaggle use `notebooks/kaggle_fedlegal_baseline.ipynb` (case type and disposal,
-3 seeds).
+### 5. Make the tables and statistics
 
-## Reproducibility notes
+```bash
+python scripts/revision_tables.py --runs runs --out results/revision            # result tables
+python scripts/significance.py --all runs/all_results.csv \
+    --a fedavg+ft --run_a fl_fedavg_ft1.0_sp_mix --b local_only --run_b local_sp_  # significance test
+python scripts/heterogeneity_stats.py --data $DATA --out results/heterogeneity_text  # are courts different?
+```
 
-* All settings were chosen on validation loss; test results are only reported.
-* GPU training was not bit-for-bit reproducible: re-running a configuration with the same seed
-  changed MAE_log by up to about 0.02. Treat single-seed differences below that as noise.
-* Cost: a single-view 256-token federated round took about 95 s on one T4 (all five courts); two-segment rounds take roughly twice as long. Runs stop early after 4 rounds without validation improvement (at most 30 rounds).
+### Useful options of `fl_judicial.py`
+
+| Option | Meaning |
+| --- | --- |
+| `--regime local / central / fl` | each court alone / all data pooled / federated |
+| `--algo fedavg, fedprox, fedadam, scaffold, ditto, ...` | federated algorithm |
+| `--segments 2` | use TSR (read start and end separately) |
+| `--mix_heads dur,typ,disp` | use PTM for these tasks |
+| `--finetune_epochs 1` | fine-tune on each court after federated training |
+| `--court_frac bombay:0.25,...` | keep only part of a court's training data |
+| `--holdout_court kerala` | leave one court out of training and only test on it |
+| `--save_preds` | save per-case predictions, for significance tests |
+
+## Repository layout
+
+```
+fl_judicial.py              main script: data, model, local / centralized / federated training
+run_queue.py                runs sets of experiments with a time budget and resume
+summarize_results.py        mean ± std over seeds
+scripts/
+  heterogeneity_stats.py    statistical tests: how different are the courts?
+  significance.py           headline metric and significance tests
+  revision_tables.py        result tables from runs/all_results.csv
+  check_masking.py          checks what survives the masking
+  linear_baseline.py        fast CPU baseline (n-grams, linear model)
+  ner_features.py, plot_forgetting.py   optional extras
+FedLegal_India_Three_Task_Baseline/   FedLegal-style baseline (see below)
+notebooks/                  Kaggle notebooks
+tests/smoke_test.py         quick CPU test
+results/
+  revision/                 final results: all_results.csv, tables, significance tests
+  heterogeneity_text/       heterogeneity tests on the 12,360 judgments
+  heterogeneity/            same tests on all 2024 metadata
+  main_results.csv          results of the earlier report version
+report/
+  main.pdf, main.tex        final report
+  REVIEW_RESPONSE.md        answers to the review, point by point
+data/                       put judgments_labelled.csv here
+```
+
+## FedLegal-style baseline
+
+[`FedLegal_India_Three_Task_Baseline/`](FedLegal_India_Three_Task_Baseline/README.md) trains a
+separate federated model for each task (plain FedAvg, no personalisation), similar to how FedLegal
+benchmarks legal tasks. It is inspired by FedLegal, not its original code. It uses the same split,
+masking and metrics as the main model; `FedLegal_India_Three_Task_Baseline/scripts/make_adapter_csv.py`
+converts the data. Run it with `notebooks/kaggle_fedlegal_baseline.ipynb`.
 
 ## Limitations
 
-* Local and centralized TSR runs, task-decoupled heads and continual runs are single seeds.
-* TSR reads 512 tokens in total against 256 for single-view baselines; a 512-token single-view
-  control was not run.
-* PTM weights are learned on training data, which may bias them towards the local heads.
-* Disposal and case-type labels are rule-based; the experiments use a 12,500-judgment sample of
-  cases decided in 2024.
-* No formal privacy mechanism (secure aggregation, differential privacy) is applied, and the replay
-  buffer shares a few real cases between courts.
+- The data are public judgments of cases decided in 2024. The privacy motivation is about
+  confidential material (for example before a case is filed), which we could not test.
+- Case-type and disposal labels are rule-based.
+- The low-resource and unseen-court experiments use one seed.
+- No formal privacy guarantee: secure aggregation and differential privacy are not applied.
+- GPU runs are not exactly reproducible; repeated runs differ by up to about 0.02 in duration error.
 
-## Acknowledgements
+## Acknowledgements and license
 
-Data: Indian High Court Judgments (Dattam Labs, AWS Open Data, CC-BY-4.0). Encoders:
-InLegalBERT (`law-ai/InLegalBERT`) and RoBERTa (`roberta-base`) from Hugging Face; LoRA via `peft`.
-
-## License
-
-Code: MIT (see `LICENSE`). The dataset keeps its own CC-BY-4.0 license.
+Data: Indian High Court Judgments (Dattam Labs, AWS Open Data, CC-BY-4.0). Encoder: InLegalBERT
+(`law-ai/InLegalBERT`); LoRA via `peft`. Code: MIT (see `LICENSE`); the dataset keeps its own license.
