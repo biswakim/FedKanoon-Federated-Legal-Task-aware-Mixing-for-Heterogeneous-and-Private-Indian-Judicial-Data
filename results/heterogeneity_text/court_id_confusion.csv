@@ -1,0 +1,6 @@
+true,bombay,delhi,karnataka,kerala,madhya_pradesh
+bombay,1998,1,0,0,1
+delhi,0,2000,0,0,0
+karnataka,0,1,1999,0,0
+kerala,0,0,0,2000,0
+madhya_pradesh,0,0,0,0,2000

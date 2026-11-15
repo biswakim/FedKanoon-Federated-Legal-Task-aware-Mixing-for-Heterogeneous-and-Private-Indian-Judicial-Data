@@ -1,0 +1,10 @@
+variable,test,stat,effect,effect_size,dof,p,mean_pairwise_KS_D,mean_pairwise_W1,mean_pairwise_JSD,max_pairwise_JSD,equiv_dirichlet_alpha,equiv_alpha_per_class,R2_family_only,R2_family_x_court,families_tested,chance,permutations,perm_p,perm_null_max,diag_MAElog,offdiag_MAElog,diag_dispF1,offdiag_dispF1
+n_k,quantity skew,7.484925032594524,max/min client size,0.5648263625692314,,,,,,,,,,,,,,,,,,,
+log_duration,Kruskal-Wallis,14195.8796483089,epsilon^2,0.04990112393920148,4.0,0.0,0.2012633892514232,0.8199408426181163,,,,,,,,,,,,,,,
+duration_bucket,chi-square (court x label),16357.23864189671,Cramer's V,0.13846045483548938,12.0,0.0,,,0.02732567583408152,0.07084760847042951,44.668359215096345,11.167089803774086,,,,,,,,,,,
+case_family,chi-square (court x label),90036.56445052878,Cramer's V,0.281326632874472,36.0,0.0,,,0.1601005330390146,0.2791648503942215,11.220184543019641,1.1220184543019642,,,,,,,,,,,
+disposal,chi-square (court x label),42421.4150362393,Cramer's V,0.24732022696272743,9.0,0.0,,,0.08746477058806863,0.16015276371514595,14.125375446227554,3.5313438615568886,,,,,,,,,,,
+log_duration | family,"two-way ANOVA, court x family interaction",626.608386792317,partial eta^2 (interaction),0.020552887548364505,8.0,0.0,,,,,,,0.0356522103729926,0.0999607208624218,,,,,,,,,
+disposal | family,stratified chi-square (sum over families),43572.11652894311,median Cramer's V within family,0.26609319093662276,56.0,0.0,,,,,,,,,9.0,,,,,,,,
+masked judgment text,"classifier two-sample test (court ID, 5-fold)",0.9959000000000001,balanced accuracy (chance = 1/K),0.9959000000000001,,0.0,,,,,,,,,,0.2,10.0,0.09090909090909091,0.2023,,,,
+transfer (TF-IDF linear),train court i -> test court j,,,,,,,,,,,,,,,,,,,1.6376984332696956,2.130386929857191,0.430169209486993,0.15318671004645676

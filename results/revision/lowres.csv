@@ -1,0 +1,13 @@
+frac,method,cfg,MAE_log,type_F1,disp_F1,Delta_MTL_vs_local_%
+0.1,centralized,central_cf-bombay0.1-delhi0.1-karnataka0.1-kerala0.1-madhya_pradesh0.1_InLegalBERT_L256_lr0.0005_seg2,1.6106978178024292,0.7210181872170937,0.4487962006982219,12.231202267367225
+0.1,fedavg+ft,fl_fedavg_ft1.0_cf-bombay0.1-delhi0.1-karnataka0.1-kerala0.1-madhya_pradesh0.1_mix-dur-typ-disp_InLegalBERT_L256_lr0.0005_seg2,1.7039823532104492,0.5982485420264948,0.4464730057402285,2.287489076630939
+0.1,fedavg,fl_fedavg_ft1.0_cf-bombay0.1-delhi0.1-karnataka0.1-kerala0.1-madhya_pradesh0.1_mix-dur-typ-disp_InLegalBERT_L256_lr0.0005_seg2,1.7022000074386596,0.5767901042037449,0.46413232509215785,2.261936081141126
+0.1,local_only,local_cf-bombay0.1-delhi0.1-karnataka0.1-kerala0.1-madhya_pradesh0.1_InLegalBERT_L256_lr0.0005_seg2,1.5989006280899047,0.5228321688840539,0.4509372606296565,0.0
+0.25,centralized,central_cf-bombay0.25-delhi0.25-karnataka0.25-kerala0.25-madhya_pradesh0.25_InLegalBERT_L256_lr0.0005_seg2,1.504241418838501,0.7856536749655542,0.5382983257027669,10.660476998758673
+0.25,fedavg+ft,fl_fedavg_ft1.0_cf-bombay0.25-delhi0.25-karnataka0.25-kerala0.25-madhya_pradesh0.25_mix-dur-typ-disp_InLegalBERT_L256_lr0.0005_seg2,1.555025339126587,0.8115560689347262,0.48355200923798825,7.250317713289813
+0.25,fedavg,fl_fedavg_ft1.0_cf-bombay0.25-delhi0.25-karnataka0.25-kerala0.25-madhya_pradesh0.25_mix-dur-typ-disp_InLegalBERT_L256_lr0.0005_seg2,1.5293090105056764,0.7952777139567078,0.48735524154281196,7.213912432787575
+0.25,local_only,local_cf-bombay0.25-delhi0.25-karnataka0.25-kerala0.25-madhya_pradesh0.25_InLegalBERT_L256_lr0.0005_seg2,1.4870362758636477,0.6262375279918946,0.4998950817143424,0.0
+0.5,fedavg+ft,fl_fedavg_ft1.0_cf-bombay0.5-delhi0.5-karnataka0.5-kerala0.5-madhya_pradesh0.5_mix-dur-typ-disp_InLegalBERT_L256_lr0.0005_seg2,1.4388967037200928,0.8810229405458555,0.5273713846110338,1.364696899051141
+0.5,fedavg,fl_fedavg_ft1.0_cf-bombay0.5-delhi0.5-karnataka0.5-kerala0.5-madhya_pradesh0.5_mix-dur-typ-disp_InLegalBERT_L256_lr0.0005_seg2,1.4597275972366333,0.8676201562698868,0.5340507086060242,0.7287558671811044
+0.5,local_only,local_cf-bombay0.5-delhi0.5-karnataka0.5-kerala0.5-madhya_pradesh0.5_InLegalBERT_L256_lr0.0005_seg2,1.4033517122268677,0.8078148942215483,0.5405362704855462,0.0
+0.5,centralized,central_cf-bombay0.5-delhi0.5-karnataka0.5-kerala0.5-madhya_pradesh0.5_InLegalBERT_L256_lr0.0005_seg2,1.420759129524231,0.8094746005124918,0.5326413139579904,-0.8318465080999655
