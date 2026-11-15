@@ -117,7 +117,16 @@ def get_args(argv=None):
                    help="2 = encode start and end of the judgment separately, task-specific attention over them")
     p.add_argument("--local_heads", default="none",
                    help="comma list of head(s) kept un-averaged per court: dur,typ,disp, or 'none' (plain FL)")
-    p.add_argument("--algo", choices=["fedavg", "fedprox", "fedavgm", "fedadam", "fedyogi", "lossweight"], default="fedavg")
+    p.add_argument("--algo", choices=["fedavg", "fedprox", "fedavgm", "fedadam", "fedyogi", "lossweight", "scaffold", "ditto"],
+                   default="fedavg")
+    p.add_argument("--ditto_lambda", type=float, default=0.1, help="ditto: pull of each personal model towards the global one")
+    p.add_argument("--save_preds", action="store_true", help="write per-case test predictions (preds.csv) for significance tests")
+    p.add_argument("--court_frac", default=None,
+                   help="data-scarcity experiment: 'court:frac[,court:frac]' keeps only that fraction of a court's TRAIN cases")
+    p.add_argument("--holdout_court", default=None,
+                   help="fl/central: this court never trains (unseen-court test); it is only evaluated")
+    p.add_argument("--cross_eval", action="store_true",
+                   help="local: also evaluate every court's local model on every other court (transfer matrix)")
     # encoder
     p.add_argument("--model", default="roberta-base", help="roberta-base or law-ai/InLegalBERT")
     p.add_argument("--max_len", type=int, default=512)
@@ -249,6 +258,10 @@ def build_clients(df, ner_cols, args, collate):
         for sp in ["train", "val", "test"]:
             d = df[(df.court == c) & (df.split == sp)]
             if sp == "train" and args.limit: d = d.iloc[:args.limit]
+            if sp == "train" and getattr(args, "court_frac", None):
+                fr = dict((k, float(v)) for k, v in (x.split(":") for x in args.court_frac.split(",")))
+                if c in fr: d = d.sample(frac=fr[c], random_state=args.seed).sort_index()
+            if sp == "test": part["cnr_test"] = d.cnr.astype(str).tolist() if "cnr" in d else list(range(len(d)))
             if sp != "train" and args.limit: d = d.iloc[:max(32, args.limit // 4)]
             part[sp] = CaseDS(d, ner_cols)
         ytr = part["train"].yo; cnt = np.bincount(ytr[ytr >= 0], minlength=4).astype(float)
@@ -388,8 +401,14 @@ def make_opt(model, args):
     if mix: groups.append({"params": mix, "lr": getattr(args, "mix_lr", 0.01), "weight_decay": 0.0})
     return torch.optim.AdamW(groups), rest + mix
 
-def local_train(model, dl, args, dev, epochs, cw, prox_ref=None, ewc=None):
+def local_train(model, dl, args, dev, epochs, cw, prox_ref=None, ewc=None, scaffold=None, mu=None):
+    """scaffold = (c_server, c_client): SCAFFOLD drift correction g <- g + c - c_k, added to the
+    gradients of the SHARED parameters after unscaling (Karimireddy et al. 2020, option II).
+    mu overrides args.mu for the proximal term (used by Ditto's personal models)."""
+    mu = args.mu if mu is None else mu
     opt, params = make_opt(model, args)
+    if scaffold is not None:
+        corr = [(p, (scaffold[0][n] - scaffold[1][n]).to(dev)) for n, p in trainable(model) if n in scaffold[0]]
     use_amp = dev.type == "cuda"; scaler = torch.amp.GradScaler("cuda", enabled=use_amp)
     if prox_ref is not None:                                   # only pull parameters that HAVE a global
         prox = [(p, prox_ref[n].to(dev)) for n, p in trainable(model) if n in prox_ref]  # reference (shared ones)
@@ -401,13 +420,18 @@ def local_train(model, dl, args, dev, epochs, cw, prox_ref=None, ewc=None):
             with torch.autocast(device_type=dev.type, dtype=torch.float16, enabled=use_amp):
                 loss = task_loss(model(b), b, args, cw)
             if prox_ref is not None:
-                loss = loss + args.mu / 2 * sum(((p.float() - g) ** 2).sum() for p, g in prox)
+                loss = loss + mu / 2 * sum(((p.float() - g) ** 2).sum() for p, g in prox)
             if ewc is not None: loss = loss + ewc.penalty(model)
             opt.zero_grad(set_to_none=True); scaler.scale(loss).backward()
-            scaler.unscale_(opt); torch.nn.utils.clip_grad_norm_(params, 1.0)
+            scaler.unscale_(opt)
+            if scaffold is not None:
+                for p, cc in corr:
+                    if p.grad is not None: p.grad.add_(cc.to(p.grad.dtype))
+            torch.nn.utils.clip_grad_norm_(params, 1.0)
             scaler.step(opt); scaler.update()
             tot += loss.item(); cnt += 1; done += 1
             if done >= steps: break
+    local_train.last_steps = done
     return tot / max(cnt, 1)
 
 @torch.no_grad()
@@ -428,7 +452,9 @@ def evaluate(model, dl, args, dev):
     bk = lambda y: np.digitize(np.expm1(y), [30, 180, 730], right=True)
     lab = yo >= 0
     seg = {f"seg_end_{t}": float(torch.cat(segw[t]).mean()) for t in TASKS if segw[t]}
-    return {**seg, "loss": loss / max(n, 1), "n": n,
+    preds = {"_preds": pd.DataFrame({"y_dur": yd, "p_dur": pd_, "y_type": yt, "p_type": pt, "y_disp": yo, "p_disp": po})} \
+        if getattr(args, "save_preds", False) else {}
+    return {**seg, **preds, "loss": loss / max(n, 1), "n": n,
             "MAE_log": float(np.abs(yd - pd_).mean()),
             "Spearman": float(spearmanr(yd, pd_)[0]) if np.std(pd_) > 0 else float("nan"),
             "F1_4": float(f1_score(bk(yd), bk(pd_), average="macro", labels=[0, 1, 2, 3])),
@@ -460,7 +486,7 @@ class Server:
     def step(s, g, states, w):
         avg = {k: sum(wi * st[k] for wi, st in zip(w, states)) for k in g}
         algo = s.a.algo
-        if algo in ("fedavg", "fedprox", "lossweight"): return avg
+        if algo in ("fedavg", "fedprox", "lossweight", "scaffold", "ditto"): return avg
         new = {}
         for k in g:
             d = avg[k] - g[k]                          # pseudo-gradient (descent direction)
@@ -499,8 +525,8 @@ class EWC:
                                for n, p in trainable(model) if n in s.F)
 
 # --------------------------------------------------------------------------- regimes
-def run_local(model, courts, C, args, dev, init):
-    rows = {}
+def run_local(model, courts, C, args, dev, init, out_dir=None):
+    rows, cross = {}, []
     for c in courts:
         set_state(model, init); best = (np.inf, None, 0)
         for e in range(int(args.epochs)):
@@ -511,29 +537,51 @@ def run_local(model, courts, C, args, dev, init):
             if args.patience and e + 1 - best[2] >= args.patience: break
         set_state(model, best[1]); rows[c] = evaluate(model, C[c]["dl"]["test"], args, dev)
         rows[c].update(sel_val_loss=best[0], best_step=best[2])
+        if getattr(args, "cross_eval", False):           # how well does court c's model serve the others?
+            for o in courts:
+                m = evaluate(model, C[o]["dl"]["test"], args, dev); m.pop("_preds", None)
+                cross.append({"train_court": c, "test_court": o, **m})
+    if cross and out_dir: pd.DataFrame(cross).to_csv(os.path.join(out_dir, "cross_eval.csv"), index=False)
     return {"local_only": rows}
 
 def run_central(model, courts, C, args, dev, init, collate):
-    pooled = ConcatDataset([C[c]["train"] for c in courts])
+    tc = [c for c in courts if c != args.holdout_court]          # --holdout_court never trains
+    pooled = ConcatDataset([C[c]["train"] for c in tc])
     dl = DataLoader(pooled, batch_size=args.batch, shuffle=True, collate_fn=collate)
-    y = np.concatenate([C[c]["train"].yo for c in courts]); cnt = np.bincount(y[y >= 0], minlength=4).astype(float)
+    y = np.concatenate([C[c]["train"].yo for c in tc]); cnt = np.bincount(y[y >= 0], minlength=4).astype(float)
     cw = torch.tensor(cnt.sum() / (4 * np.maximum(cnt, 1)), dtype=torch.float32)
     set_state(model, init); best = (np.inf, None, 0)
     for e in range(int(args.epochs)):
         local_train(model, dl, args, dev, 1, cw)
-        _, v = eval_split(model, courts, C, "val", args, dev)
+        _, v = eval_split(model, tc, C, "val", args, dev)
         print(f"  central epoch {e+1}: val loss {v:.4f}", flush=True)
         if v < best[0]: best = (v, get_state(model), e + 1)
         if args.patience and e + 1 - best[2] >= args.patience: break
     set_state(model, best[1]); res = eval_split(model, courts, C, "test", args, dev)[0]
     for c in res: res[c].update(sel_val_loss=best[0], best_step=best[2])
-    return {"centralized": res}
+    out = {"centralized": res}
+    if args.finetune_epochs > 0:      # strongest centralized competitor: pooled model + per-court fine-tuning
+        ft = {}
+        for c in courts:
+            set_state(model, best[1])
+            if c != args.holdout_court:
+                local_train(model, C[c]["dl"]["train"], args, dev, args.finetune_epochs, C[c]["cw"])
+            ft[c] = evaluate(model, C[c]["dl"]["test"], args, dev); ft[c].update(sel_val_loss=best[0], best_step=best[2])
+        out["centralized+ft"] = ft
+    return out
 
 def run_fl(model, courts, C, args, dev, init, out_dir):
     local_heads = parse_local_heads(args.local_heads)
     g, local0 = split_state(init, local_heads)                 # g: shared/averaged; local0: per-court copies start here
     client_local = {c: {k: v.clone() for k, v in local0.items()} for c in courts}
     server = Server(args, g)
+    tc = [c for c in courts if c != args.holdout_court]           # --holdout_court: never trains, only tested
+    assert not (args.holdout_court and (args.algo == "ditto" or local_heads or parse_heads(args.mix_heads))), \
+        "--holdout_court needs a fully shared model (no ditto / local / mixed heads): the unseen court has no own part"
+    # SCAFFOLD control variates (shared parameters only) and Ditto personal models (all trainable parameters)
+    c_srv = {k: torch.zeros_like(v) for k, v in g.items()} if args.algo == "scaffold" else None
+    c_cli = {c: {k: torch.zeros_like(v) for k, v in g.items()} for c in courts} if args.algo == "scaffold" else None
+    personal = {c: {k: v.clone() for k, v in init.items()} for c in courts} if args.algo == "ditto" else None
     best = (np.inf, None, None, 0); hist = []; rng = np.random.default_rng(args.seed); start = 1
     ck = os.path.join(out_dir, "ckpt.pt")
     if args.init_from:                                       # reuse a finished run (e.g. FedAvg) for +ft
@@ -544,32 +592,47 @@ def run_fl(model, courts, C, args, dev, init, out_dir):
         st = torch.load(ck, weights_only=False)
         g, server.m, server.v, best, hist, start = st["g"], st["m"], st["v"], st["best"], st["hist"], st["round"] + 1
         client_local = st.get("client_local", client_local)
+        c_srv, c_cli, personal = st.get("c_srv", c_srv), st.get("c_cli", c_cli), st.get("personal", personal)
         rng.bit_generator.state = st["rng"]
         print(f"  resumed from round {start - 1}", flush=True)
     for r in range(start, args.rounds + 1):
         t0 = time.time()
-        part = [c for c in courts if rng.random() < args.frac] or [rng.choice(courts)]
-        states, losses = [], []
+        part = [c for c in tc if rng.random() < args.frac] or [rng.choice(tc)]
+        states, losses, dc = [], [], []
         for c in part:
             set_state(model, merge_state(g, client_local[c]))
             L = local_train(model, C[c]["dl"]["train"], args, dev, args.local_epochs, C[c]["cw"],
-                            prox_ref=g if args.algo == "fedprox" else None)
+                            prox_ref=g if args.algo == "fedprox" else None,
+                            scaffold=(c_srv, c_cli[c]) if args.algo == "scaffold" else None)
             shared_c, client_local[c] = split_state(get_state(model), local_heads)
+            if args.algo == "scaffold":           # option II: c_k+ = c_k - c + (x - y_k) / (K * lr)
+                K = max(1, local_train.last_steps)
+                new = {k: c_cli[c][k] - c_srv[k] + (g[k] - shared_c[k]) / (K * args.lr) for k in g}
+                dc.append({k: new[k] - c_cli[c][k] for k in g}); c_cli[c] = new
+            if args.algo == "ditto":              # personal model, pulled towards the current global one
+                set_state(model, personal[c])
+                local_train(model, C[c]["dl"]["train"], args, dev, args.local_epochs, C[c]["cw"],
+                            prox_ref=g, mu=args.ditto_lambda)
+                personal[c] = get_state(model)
             states.append(shared_c); losses.append(L)
+        if args.algo == "scaffold":
+            for k in c_srv: c_srv[k] = c_srv[k] + sum(d[k] for d in dc) / len(tc)
         w = server.weights([C[c]["n"] for c in part], losses)
         g = server.step(g, states, w)
-        val, vloss = eval_split(model, courts, C, "val", args, dev, g, client_local)
+        ev_local = personal if args.algo == "ditto" else client_local     # what each court actually uses
+        val, vloss = eval_split(model, tc, C, "val", args, dev, g, ev_local)
         rec = {"round": r, "val_loss": vloss, "secs": time.time() - t0,
                **{f"w_{c}": wi for c, wi in zip(part, w)},
-               **{f"{m}_mean": float(np.nanmean([val[c][m] for c in courts])) for m in ["MAE_log", "disp_F1", "type_F1"]}}
+               **{f"{m}_mean": float(np.nanmean([val[c][m] for c in tc])) for m in ["MAE_log", "disp_F1", "type_F1"]}}
         hist.append(rec)
         print(f"  round {r:3d} | val loss {vloss:.4f} | MAE_log {rec['MAE_log_mean']:.3f} | "
               f"disp F1 {rec['disp_F1_mean']:.3f} | {rec['secs']:.0f}s", flush=True)
         if vloss < best[0]:
             best = (vloss, {k: v.clone() for k, v in g.items()},
-                    {c: {k: v.clone() for k, v in cl.items()} for c, cl in client_local.items()}, r)
+                    {c: {k: v.clone() for k, v in cl.items()} for c, cl in ev_local.items()}, r)
         torch.save({"g": g, "m": server.m, "v": server.v, "best": best, "hist": hist, "round": r,
-                    "client_local": client_local, "rng": rng.bit_generator.state}, ck)
+                    "client_local": client_local, "c_srv": c_srv, "c_cli": c_cli, "personal": personal,
+                    "rng": rng.bit_generator.state}, ck)
         if args.patience and r - best[3] >= args.patience:
             print(f"  early stop: no val improvement for {args.patience} rounds", flush=True); break
     pd.DataFrame(hist).to_csv(os.path.join(out_dir, "history.csv"), index=False)
@@ -589,10 +652,11 @@ def run_fl(model, courts, C, args, dev, init, out_dir):
         ft, fv = {}, {}
         for c in courts:
             set_state(model, merge_state(best_g, best_local[c]))
-            local_train(model, C[c]["dl"]["train"], args, dev, args.finetune_epochs, C[c]["cw"])
+            if c != args.holdout_court:          # an unseen court has no data to fine-tune on
+                local_train(model, C[c]["dl"]["train"], args, dev, args.finetune_epochs, C[c]["cw"])
             fv[c] = evaluate(model, C[c]["dl"]["val"], args, dev); ft[c] = evaluate(model, C[c]["dl"]["test"], args, dev)
-        n = np.array([fv[c]["n"] for c in courts], float)
-        ft_val = float(np.dot([fv[c]["loss"] for c in courts], n) / n.sum())
+        n = np.array([fv[c]["n"] for c in tc], float)
+        ft_val = float(np.dot([fv[c]["loss"] for c in tc], n) / n.sum())
     for per in res.values():
         for c in per: per[c].update(sel_val_loss=best[0], best_step=best[3])
     if args.finetune_epochs > 0:
@@ -666,7 +730,7 @@ def run_fed_continual(model, courts, C, args, dev, init, out_dir, collate):
             row = {"stage": stage, "joined_this_stage": c, "eval_court": i,
                    "rounds_since_onboarded": stage - onboarded_at[i]}
             for sp in ("val", "test"):                     # both logged; forgetting is SELECTED on val, REPORTED on test
-                row.update({f"{sp}_{k}": v for k, v in evaluate(model, C[i]["dl"][sp], args, dev).items()})
+                row.update({f"{sp}_{k}": v for k, v in evaluate(model, C[i]["dl"][sp], args, dev).items() if k != "_preds"})
             stage_rows.append(row)
         mean_now = np.nanmean([row["test_MAE_log"] for row in stage_rows if row["stage"] == stage])
         print(f"  stage {stage}/{len(order)}: onboarded {c} (train loss {L:.4f}) | "
@@ -703,9 +767,13 @@ def main(argv=None):
     dev = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     tag = ""
     if args.regime == "fl":
-        tag = f"_{args.algo}" + {"fedprox": f"_mu{args.mu}", "lossweight": f"_beta{args.beta}"}.get(args.algo, "")
+        tag = f"_{args.algo}" + {"fedprox": f"_mu{args.mu}", "lossweight": f"_beta{args.beta}",
+                                 "ditto": f"_lam{args.ditto_lambda}"}.get(args.algo, "")
         if args.algo in ("fedavgm", "fedadam", "fedyogi") and args.server_lr is not None: tag += f"_slr{args.server_lr}"
     if args.finetune_epochs > 0: tag += f"_ft{args.finetune_epochs}"
+    if args.court_frac: tag += "_cf-" + args.court_frac.replace(":", "").replace(",", "-")
+    if args.holdout_court: tag += f"_ho-{args.holdout_court}"
+    if args.save_preds: tag += "_sp"
     if args.regime == "fed_continual":                        # ewc_lambda AND replay_size must both be in the
         tag += f"_ewc{args.ewc_lambda:g}"                      # name, or e.g. "naive" and "ewc_only" collide into
         tag += f"_replay{args.replay_size}" if args.replay_size > 0 else "_noreplay"  # one folder and silently skip
@@ -737,12 +805,18 @@ def main(argv=None):
     print(f"trainable/communicated params: {n_tr:,} of {n_all:,} ({100*n_tr/n_all:.2f}%)")
     init = get_state(model)
 
-    if args.regime == "local": res = run_local(model, courts, C, args, dev, init)
+    if args.regime == "local": res = run_local(model, courts, C, args, dev, init, out_dir)
     elif args.regime == "central": res = run_central(model, courts, C, args, dev, init, collate)
     elif args.regime == "fl": res = run_fl(model, courts, C, args, dev, init, out_dir)
     elif args.regime == "fed_continual": res = run_fed_continual(model, courts, C, args, dev, init, out_dir, collate)
     else: res = run_seq_ewc(model, courts, C, args, dev, init)
 
+    preds = []
+    for m, per in res.items():
+        for c, met in per.items():
+            pr = met.pop("_preds", None)
+            if pr is not None: preds.append(pr.assign(method=m, court=c, cnr=C[c]["cnr_test"][:len(pr)], seed=args.seed))
+    if preds: pd.concat(preds).to_csv(os.path.join(out_dir, "preds.csv"), index=False)
     rows = [{"method": m, "court": c, "seed": args.seed, "model": args.model, "run": name,
              "max_len": args.max_len, "lr": args.lr, "trunc": "seg2" if args.segments == 2 else args.trunc, **met}
             for m, per in res.items() for c, met in per.items()]

@@ -34,6 +34,20 @@ Plans
           separate the architecture gain from the FL gain. Jobs are split over --n_shards
           GPUs by estimated cost. About 6-7 h per GPU on two T4s.
 
+  revision  experiments asked for in the final review (needs nothing else; base setting is the
+          report's: InLegalBERT, lr 5e-4, 256 tokens per view). Pick a part with --part:
+          baselines  FedLegal-style algorithm suite under the SAME TSR model, 3 seeds:
+                     FedProx, SCAFFOLD, FedAdam, Ditto (lambda tuned on validation from 0.01/0.1/1),
+                     FedPer (all heads local), and FedAvg+ft / TSR+PTM+ft with --save_preds.
+          controls   single-view 512-token FedAvg/local/central (is TSR more than extra tokens?),
+                     local and centralized TSR for seeds 1 and 2, and centralized
+                     TSR + per-court fine-tuning (3 seeds): the fairest 'why not centralize?' comparison.
+          flhelps    why federate? (a) low-resource federation: every court keeps 10/25/50% of its
+                     training cases, local vs TSR+PTM+ft; (b) unseen court: each court in turn is
+                     held out of FedAvg+TSR training, compared with the other courts' local models
+                     (local --cross_eval) and with centralized training without that court.
+          Jobs are split over --n_shards GPUs by estimated cost.
+
 Usage:  python run_queue.py --data DATA --plan sweep --encoder roberta-base --budget_hours 11
         python run_queue.py --data DATA --plan confirm --shard 0 --n_shards 2 --budget_hours 11
         python run_queue.py --data DATA --plan novel --budget_hours 3
@@ -43,7 +57,8 @@ import pandas as pd
 
 p = argparse.ArgumentParser()
 p.add_argument("--data", required=True)
-p.add_argument("--plan", choices=["sweep", "confirm", "mini", "novel", "mix"], required=True)
+p.add_argument("--plan", choices=["sweep", "confirm", "mini", "novel", "mix", "revision"], required=True)
+p.add_argument("--part", choices=["baselines", "controls", "flhelps", "all"], default="all", help="revision plan")
 p.add_argument("--seeds", default="1", help="mini plan: comma-separated seeds")
 p.add_argument("--encoder", default="roberta-base")
 p.add_argument("--shard", type=int, default=0)
@@ -249,7 +264,66 @@ def mix_plan():
     print(f"shard {A.shard}/{A.n_shards}: {[l for l, _ in mine]} (~{load[A.shard]:.1f} h)", flush=True)
     for label, cmd in mine: run(cmd, label)
 
+def shard_run(jobs):
+    load = [0.0] * A.n_shards; mine = []
+    for label, cmd, h in jobs:                     # greedy, deterministic: same split on every GPU
+        k = min(range(A.n_shards), key=lambda i: (load[i], i)); load[k] += h
+        if k == A.shard: mine.append((label, cmd))
+    print(f"shard {A.shard}/{A.n_shards}: {[l for l, _ in mine]} (~{load[A.shard]:.1f} h)", flush=True)
+    for label, cmd in mine: run(cmd, label)
+
+COURTS = ["bombay", "delhi", "karnataka", "kerala", "madhya_pradesh"]
+
+def revision_plan():
+    enc, lr = "law-ai/InLegalBERT", 5e-4
+    SEG = ["--segments", "2"]; MIX = ["--mix_heads", "dur,typ,disp"]; FT = ["--finetune_epochs", "1"]
+    SP = ["--save_preds"]; jobs = []
+    if A.part in ("baselines", "all"):
+        # Ditto lambda chosen on validation (seed 0) before the extra seeds are run
+        lam_jobs = [(f"ditto lam{l} s0", fl(enc, lr, "head", "ditto", SEG + SP + ["--ditto_lambda", str(l)]), 1.8)
+                    for l in (0.01, 0.1, 1.0)]
+        if A.n_shards == 1 or A.shard == 0:
+            for label, cmd, _ in lam_jobs: run(cmd, label)
+        r = results(); d = r[(r.method == "ditto") & (r.seed == 0)] if not r.empty else r
+        best_lam = 0.1
+        if len(d):
+            d = d.assign(lam=d.run.str.extract(r"_lam([\d.]+)_", expand=False).astype(float))
+            best_lam = float(d.groupby("lam").sel_val_loss.mean().idxmin())
+        print(f"ditto lambda (validation): {best_lam}", flush=True)
+        for seed in (0, 1, 2):
+            jobs += [(f"seg2 fedprox s{seed}", fl(enc, lr, "head", "fedprox", SEG + SP + ["--mu", "0.01"], seed=seed), 1.5),
+                     (f"seg2 scaffold s{seed}", fl(enc, lr, "head", "scaffold", SEG + SP, seed=seed), 1.5),
+                     (f"seg2 fedadam s{seed}", fl(enc, lr, "head", "fedadam", SEG + SP + ["--server_lr", "3e-3"], seed=seed), 1.5),
+                     (f"seg2 fedper s{seed}", fl(enc, lr, "head", "fedavg", SEG + SP, local_heads="dur,typ,disp", seed=seed), 1.5),
+                     (f"seg2+mix+ft preds s{seed}", fl(enc, lr, "head", "fedavg", SEG + MIX + FT + SP, seed=seed), 1.6),
+                     (f"local seg2 preds s{seed}", ref(enc, lr, "head", "local", seed=seed) + SEG + SP, 0.6),
+                     (f"fedavg+ft ht preds s{seed}", fl(enc, lr, "headtail", "fedavg", FT + SP, seed=seed), 0.8)]
+            if seed: jobs.append((f"seg2 ditto lam{best_lam} s{seed}",
+                                  fl(enc, lr, "head", "ditto", SEG + SP + ["--ditto_lambda", str(best_lam)], seed=seed), 1.8))
+    if A.part in ("controls", "all"):
+        for seed in (0, 1, 2):      # centralized with the same model and the same personalisation as ours
+            jobs.append((f"central seg2+ft s{seed}", ref(enc, lr, "head", "central", seed=seed) + SEG + FT + SP, 0.8))
+        for seed in (1, 2):
+            jobs += [(f"local seg2 preds s{seed}", ref(enc, lr, "head", "local", seed=seed) + SEG + SP, 0.6),
+                     (f"central seg2 s{seed}", ref(enc, lr, "head", "central", seed=seed) + SEG, 0.7)]
+        for seed in (0, 1, 2):
+            jobs += [(f"fedavg L512 ht s{seed}", fl(enc, lr, "headtail", "fedavg", FT, max_len=512, seed=seed), 1.6),
+                     (f"local L512 ht s{seed}", ref(enc, lr, "headtail", "local", max_len=512, seed=seed), 0.6),
+                     (f"central L512 ht s{seed}", ref(enc, lr, "headtail", "central", max_len=512, seed=seed), 0.7)]
+    if A.part in ("flhelps", "all"):
+        for frac in (0.1, 0.25, 0.5):
+            cf = ["--court_frac", ",".join(f"{c}:{frac}" for c in COURTS)]
+            jobs += [(f"lowres{frac} local", ref(enc, lr, "head", "local") + SEG + cf, 0.2),
+                     (f"lowres{frac} central", ref(enc, lr, "head", "central") + SEG + cf, 0.3),
+                     (f"lowres{frac} seg2+mix+ft", fl(enc, lr, "head", "fedavg", SEG + MIX + FT + cf), 0.6)]
+        jobs.append(("local seg2 cross-eval", ref(enc, lr, "head", "local") + SEG + ["--cross_eval"], 0.6))
+        for c in COURTS:
+            jobs += [(f"holdout {c} fedavg seg2", fl(enc, lr, "head", "fedavg", SEG + ["--holdout_court", c]), 1.2),
+                     (f"holdout {c} central seg2", ref(enc, lr, "head", "central") + SEG + ["--holdout_court", c], 0.6)]
+    shard_run(jobs)
+
 if A.plan == "sweep": sweep(A.encoder)
+elif A.plan == "revision": revision_plan()
 elif A.plan == "mix": mix_plan()
 elif A.plan == "mini": mini()
 elif A.plan == "novel": novel()

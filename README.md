@@ -57,9 +57,13 @@ scripts/
   plot_forgetting.py    forgetting curves for continual-onboarding runs
   ner_features.py       optional OpenNyAI NER features (--ner_csv)
   linear_baseline.py    fast CPU baseline (hashed n-grams, linear model)
+  heterogeneity_stats.py  statistical tests for quantity/label/concept/covariate skew across courts
+  significance.py       Delta_MTL headline metric, paired Wilcoxon and case-level bootstrap tests
+  revision_tables.py    tables for the revision runs (baselines, low-resource, unseen court, 512 control)
+FedLegal_India_Three_Task_Baseline/   FedLegal-style independent-task FL baseline
 tests/smoke_test.py     CPU end-to-end test with a tiny random encoder
 results/                main_results.csv and figures
-report/                 LaTeX Methodology + Results sections for the report
+report/                 final report (main.tex, main.pdf) and figures
 data/                   put judgments_labelled.csv here (see data/README.md)
 ```
 
@@ -99,10 +103,25 @@ python fl_judicial.py $COMMON --regime fed_continual --trunc headtail --seq_epoc
 python summarize_results.py runs/all_results.csv     # writes comparison.csv
 ```
 
-Other algorithms: `--algo fedprox --mu 0.01`, `--algo fedavgm --server_lr 1.0`,
+Review experiments (FedLegal-style baselines, 512-token control, low-resource and unseen-court
+studies): `python run_queue.py --data $DATA --plan revision --part {baselines,controls,flhelps}`.
+New flags: `--save_preds`, `--court_frac court:frac,...`, `--holdout_court COURT`, `--cross_eval`.
+See `report/REVIEW_RESPONSE.md`.
+
+Other algorithms: `--algo scaffold`, `--algo ditto --ditto_lambda 0.1`, `--algo fedprox --mu 0.01`, `--algo fedavgm --server_lr 1.0`,
 `--algo fedadam --server_lr 3e-3`, `--algo lossweight --beta -1`. Full queues used in the
 project: `python run_queue.py --data $DATA --plan {sweep,mini,confirm,novel,mix}`; see the
 docstring of `run_queue.py`.
+
+## FedLegal-style independent-task baseline
+
+`FedLegal_India_Three_Task_Baseline/` trains one separate federated model per task (FedAvg, InLegalBERT + LoRA,
+256 head+tail tokens, no personalisation). It is inspired by FedLegal (ACL 2023), not its original code (see its
+README). To compare it with the main model it uses the same split and masking: `scripts/make_adapter_csv.py`
+converts `judgments_labelled.csv`, mapping the case-type families to the baseline's label names so no cases are
+dropped. Case-type macro-F1 is computed over the families present, as in `fl_judicial.py`, and the duration
+output starts at log(90 days). On Kaggle use `notebooks/kaggle_fedlegal_baseline.ipynb` (case type and disposal,
+3 seeds).
 
 ## Reproducibility notes
 
